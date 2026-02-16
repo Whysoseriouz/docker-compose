@@ -1,0 +1,69 @@
+services:
+
+  # ============================================
+  # Traefik – Reverse Proxy & SSL-Terminierung
+  # ============================================
+  traefik:
+    image: traefik:latest
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ}
+    command:
+      # Docker als Provider: Container-Labels steuern das Routing
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      # Entrypoints: HTTP (80) und HTTPS (443)
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      # Alle HTTP-Anfragen automatisch auf HTTPS umleiten
+      - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
+      - "--entrypoints.web.http.redirections.entrypoint.scheme=https"
+      # Let's Encrypt: Automatische Zertifikatsverwaltung via HTTP-Challenge
+      - "--certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL}"
+      - "--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json"
+      - "--certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web"
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      # Let's Encrypt Zertifikate persistieren
+      - letsencrypt:/letsencrypt
+      # Docker Socket: Traefik erkennt Container und deren Labels
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+  # ============================================
+  # GeoServer – OGC-kompatibler Kartenserver
+  # ============================================
+  geoserver:
+    image: docker.osgeo.org/geoserver:2.28.0
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ}
+      # Admin-Passwort (wird nur beim ersten Start ins Volume geschrieben)
+      - GEOSERVER_ADMIN_PASSWORD=${GEOSERVER_ADMIN_PASSWORD}
+      # CSRF-Schutz deaktiviert (nötig hinter Reverse Proxy)
+      - GEOSERVER_CSRF_DISABLED=true
+      # Öffentliche URL, unter der GeoServer erreichbar ist
+      - PROXY_BASE_URL=https://${DOMAIN}/geoserver
+    volumes:
+      # GeoServer-Daten: Layer, Styles, Konfiguration
+      - geoserver_data:/opt/geoserver_data
+    labels:
+      # Traefik-Routing aktivieren
+      - "traefik.enable=true"
+      # Routing-Regel: Alle Anfragen an die konfigurierte Domain
+      - "traefik.http.routers.geoserver.rule=Host(`${DOMAIN}`)"
+      # Nur über HTTPS erreichbar
+      - "traefik.http.routers.geoserver.entrypoints=websecure"
+      # SSL-Zertifikat über Let's Encrypt beziehen
+      - "traefik.http.routers.geoserver.tls.certresolver=letsencrypt"
+      # GeoServer lauscht intern auf Port 8080 (Tomcat)
+      - "traefik.http.services.geoserver.loadbalancer.server.port=8080"
+      # Proxy-Header: GeoServer muss wissen, dass HTTPS verwendet wird
+      - "traefik.http.middlewares.geoserver-headers.headers.customrequestheaders.X-Forwarded-Proto=https"
+      - "traefik.http.middlewares.geoserver-headers.headers.customrequestheaders.X-Forwarded-Host=geoserver.kuntztech.de"
+      - "traefik.http.routers.geoserver.middlewares=geoserver-headers"
+
+volumes:
+  letsencrypt:    # Let's Encrypt Zertifikate & Account-Daten
+  geoserver_data: # GeoServer Data Directory (Layer, Styles, Config)
